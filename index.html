@@ -79,7 +79,7 @@
 <div id="game-over">
     <h1 style="color: var(--danger); font-size: 40px;">CRITICAL FAILURE</h1>
     <p>Waves Survived: <span id="final-wave" style="color:var(--primary)">0</span></p>
-    <button class="btn-restart" onclick="location.reload()">INITIATE REBOOT</button>
+    <button class="btn-restart" onclick="restartGame()">INITIATE REBOOT</button>
 </div>
 
 <script>
@@ -87,8 +87,8 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
-// --- Configuration ---
-const STATE = {
+// --- ИСХОДНЫЕ ЗНАЧЕНИЯ (Для легкого сброса) ---
+const INITIAL_STATE = {
     money: 60,
     health: 100,
     maxHealth: 100,
@@ -96,74 +96,30 @@ const STATE = {
     active: true,
     lastTime: 0,
     secTimer: 0,
-    frame: 0
+    frame: 0,
+    animationFrameId: null // Для отслеживания ID цикла
 };
 
-// --- Player Stats & Upgrades ---
-const PLAYER = {
+const INITIAL_PLAYER = {
     x: 0, y: 0,
     clickDmg: 10,
-    critChance: 0.0,    // 0% to start
+    critChance: 0.0,
     critMult: 2.0,
-    autoClickSpeed: 0,  // Clicks per second (0 = off)
+    autoClickSpeed: 0,
     autoClickTimer: 0,
-    interestRate: 0.0,  // 0%
-    stasisRange: 0,     // 0 = off
+    interestRate: 0.0,
+    stasisRange: 0,
     missileUnlock: false,
     missileDmg: 20,
-    missileCooldown: 120, // Frames
+    missileCooldown: 120,
     missileTimer: 0
 };
 
-// --- Upgrade Database ---
-const UPGRADES = [
-    {
-        id: 'click', name: 'Laser Amp', base: 25, mult: 1.5, lvl: 1, type: 'active',
-        desc: '+5 Click Damage',
-        act: (u) => { PLAYER.clickDmg += 5; }
-    },
-    {
-        id: 'crit', name: 'Crit Lens', base: 150, mult: 1.6, lvl: 0, type: 'active',
-        desc: '+10% Crit Chance',
-        act: (u) => { PLAYER.critChance += 0.10; }
-    },
-    {
-        id: 'turret', name: 'Auto-Turret', base: 100, mult: 1.4, lvl: 0, type: 'defense',
-        desc: 'Spawns a basic turret',
-        act: (u) => { entities.turrets.push(new Turret(entities.turrets.length)); }
-    },
-    {
-        id: 'missile', name: 'Homing Missile', base: 300, mult: 1.5, lvl: 0, type: 'defense',
-        desc: 'Unlocks AoE Rockets',
-        act: (u) => { 
-            if(!PLAYER.missileUnlock) PLAYER.missileUnlock = true;
-            else { PLAYER.missileDmg += 15; PLAYER.missileCooldown = Math.max(30, PLAYER.missileCooldown - 10); }
-        }
-    },
-    {
-        id: 'stasis', name: 'Stasis Field', base: 200, mult: 1.8, lvl: 0, type: 'defense',
-        desc: 'Slows nearby enemies',
-        act: (u) => { PLAYER.stasisRange += 40; }
-    },
-    {
-        id: 'autoclick', name: 'AI Gunner', base: 500, mult: 2.0, lvl: 0, type: 'active',
-        desc: 'Auto-clicks 2x/sec',
-        act: (u) => { PLAYER.autoClickSpeed += 2; }
-    },
-    {
-        id: 'bank', name: 'Plasma Bank', base: 100, mult: 1.5, lvl: 0, type: 'eco',
-        desc: '+1% Interest/sec on cash',
-        act: (u) => { PLAYER.interestRate += 0.01; }
-    },
-    {
-        id: 'repair', name: 'Hull Repair', base: 50, mult: 1.1, lvl: 0, type: 'heal',
-        desc: 'Recover 30 HP',
-        act: (u) => { STATE.health = Math.min(STATE.health + 30, STATE.maxHealth); }
-    }
-];
-
-// --- Entity Lists ---
-const entities = {
+// --- Переменные состояния ---
+let STATE = {...INITIAL_STATE}; // Распыление для создания копии
+let PLAYER = {...INITIAL_PLAYER};
+let UPGRADES_DB; // Будет инициализирована в initShop
+let entities = {
     enemies: [],
     particles: [],
     projectiles: [],
@@ -171,7 +127,57 @@ const entities = {
     texts: []
 };
 
-// --- Initial Setup ---
+
+// --- Upgrade Database (Сделано функцией для возможности сброса) ---
+function getUpgradesDB() {
+    return [
+        {
+            id: 'click', name: 'Laser Amp', base: 25, mult: 1.5, lvl: 1, type: 'active',
+            desc: '+5 Click Damage',
+            act: (u) => { PLAYER.clickDmg += 5; }
+        },
+        {
+            id: 'crit', name: 'Crit Lens', base: 150, mult: 1.6, lvl: 0, type: 'active',
+            desc: '+10% Crit Chance',
+            act: (u) => { PLAYER.critChance += 0.10; }
+        },
+        {
+            id: 'turret', name: 'Auto-Turret', base: 100, mult: 1.4, lvl: 0, type: 'defense',
+            desc: 'Spawns a basic turret',
+            act: (u) => { entities.turrets.push(new Turret(entities.turrets.length)); }
+        },
+        {
+            id: 'missile', name: 'Homing Missile', base: 300, mult: 1.5, lvl: 0, type: 'defense',
+            desc: 'Unlocks AoE Rockets',
+            act: (u) => { 
+                if(!PLAYER.missileUnlock) PLAYER.missileUnlock = true;
+                else { PLAYER.missileDmg += 15; PLAYER.missileCooldown = Math.max(30, PLAYER.missileCooldown - 10); }
+            }
+        },
+        {
+            id: 'stasis', name: 'Stasis Field', base: 200, mult: 1.8, lvl: 0, type: 'defense',
+            desc: 'Slows nearby enemies',
+            act: (u) => { PLAYER.stasisRange += 40; }
+        },
+        {
+            id: 'autoclick', name: 'AI Gunner', base: 500, mult: 2.0, lvl: 0, type: 'active',
+            desc: 'Auto-clicks 2x/sec',
+            act: (u) => { PLAYER.autoClickSpeed += 2; }
+        },
+        {
+            id: 'bank', name: 'Plasma Bank', base: 100, mult: 1.5, lvl: 0, type: 'eco',
+            desc: '+1% Interest/sec on cash',
+            act: (u) => { PLAYER.interestRate += 0.01; }
+        },
+        {
+            id: 'repair', name: 'Hull Repair', base: 50, mult: 1.1, lvl: 0, type: 'heal',
+            desc: 'Recover 30 HP',
+            act: (u) => { STATE.health = Math.min(STATE.health + 30, STATE.maxHealth); }
+        }
+    ];
+}
+
+// --- Initial Setup / Resize ---
 function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
@@ -179,7 +185,7 @@ function resize() {
     PLAYER.y = canvas.height / 2;
 }
 window.addEventListener('resize', resize);
-resize();
+
 
 // --- Input ---
 canvas.addEventListener('mousedown', (e) => {
@@ -188,7 +194,7 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 function firePlayerShot(tx, ty) {
-    // Check hit
+    // ... (Остальная часть функции firePlayerShot без изменений)
     let hit = false;
     // Check enemies (reverse order for z-index)
     for(let i=entities.enemies.length-1; i>=0; i--){
@@ -209,10 +215,12 @@ function firePlayerShot(tx, ty) {
     if(!hit) spawnParticle(tx, ty, 2, '#fff'); // Miss puff
 }
 
-// --- Classes ---
+
+// --- Classes (без изменений) ---
 
 class Enemy {
     constructor() {
+        // ... (конструктор без изменений)
         // Spawn Types
         const rand = Math.random();
         this.type = 'normal';
@@ -252,6 +260,7 @@ class Enemy {
     }
 
     update() {
+        // ... (update без изменений)
         const dx = PLAYER.x - this.x;
         const dy = PLAYER.y - this.y;
         const dist = Math.hypot(dx, dy);
@@ -276,6 +285,7 @@ class Enemy {
     }
 
     draw(ctx) {
+        // ... (draw без изменений)
         ctx.beginPath();
         ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2);
         ctx.fillStyle = this.slowed ? '#fff' : this.color; // Flash white if slowed
@@ -296,6 +306,7 @@ class Enemy {
 
 class Turret {
     constructor(idx) {
+        // ... (конструктор и update/draw без изменений)
         this.angle = (Math.PI * 2 / 6) * idx;
         this.dist = 60;
         this.range = 200;
@@ -329,6 +340,7 @@ class Turret {
 
 class Projectile {
     constructor(x, y, target, type) {
+        // ... (конструктор и update/draw без изменений)
         this.x = x; this.y = y; this.target = target;
         this.type = type; // 'bullet' or 'missile'
         this.speed = type === 'missile' ? 4 : 8;
@@ -378,6 +390,7 @@ class Projectile {
 
 class FloatingText {
     constructor(x, y, txt, col) {
+        // ... (конструктор и update/draw без изменений)
         this.x = x + (Math.random()*20 - 10);
         this.y = y;
         this.txt = txt;
@@ -394,7 +407,7 @@ class FloatingText {
     }
 }
 
-// --- Helpers ---
+// --- Helpers (без изменений) ---
 
 function spawnParticle(x, y, amt, col) {
     for(let i=0; i<amt; i++) {
@@ -423,21 +436,33 @@ function damageEnemy(e, amt, crit) {
     }
 }
 
+// ИЗМЕНЕНИЕ: Отдельная функция для обработки конца игры
+function gameOver() {
+    STATE.active = false;
+    document.getElementById('game-over').style.display = 'flex';
+    document.getElementById('final-wave').innerText = STATE.wave;
+    // Остановим цикл, чтобы он не запускался в фоне
+    if (STATE.animationFrameId) {
+        cancelAnimationFrame(STATE.animationFrameId);
+        STATE.animationFrameId = null;
+    }
+}
+
 function takeDamage(amt) {
     STATE.health -= amt;
     spawnParticle(PLAYER.x, PLAYER.y, 20, '#f00');
     if(STATE.health <= 0) {
-        STATE.active = false;
-        document.getElementById('game-over').style.display = 'flex';
-        document.getElementById('final-wave').innerText = STATE.wave;
+        gameOver();
     }
 }
 
+
 // --- Shop Logic ---
 function initShop() {
+    UPGRADES_DB = getUpgradesDB(); // Сброс базы данных апгрейдов
     const grid = document.getElementById('shop-grid');
     grid.innerHTML = '';
-    UPGRADES.forEach(u => {
+    UPGRADES_DB.forEach(u => {
         const div = document.createElement('div');
         div.className = 'card';
         div.id = `upg-${u.id}`;
@@ -479,7 +504,7 @@ function buyUpgrade(u) {
 
 function renderShop() {
     // Enable/Disable buttons based on money
-    UPGRADES.forEach(u => {
+    UPGRADES_DB.forEach(u => { // Используем новую переменную
         const el = document.getElementById(`upg-${u.id}`);
         if(STATE.money < u.base) el.classList.add('disabled');
         else el.classList.remove('disabled');
@@ -535,7 +560,8 @@ function gameLoop(time) {
         }
 
         // Update UI Text
-        document.getElementById('ui-money').innerText = Math.floor(STATE.money);
+        // ИЗМЕНЕНИЕ: Добавлено форматирование для денег
+        document.getElementById('ui-money').innerText = Math.floor(STATE.money).toLocaleString(); 
         document.getElementById('ui-income').innerText = `+${interest}/s`;
         document.getElementById('ui-hp').innerText = STATE.health + "%";
         document.getElementById('ui-wave').innerText = STATE.wave;
@@ -589,13 +615,47 @@ function gameLoop(time) {
     entities.texts = entities.texts.filter(t => t.life > 0);
     entities.texts.forEach(t => { t.update(); t.draw(ctx); });
 
-    requestAnimationFrame(gameLoop);
+    STATE.animationFrameId = requestAnimationFrame(gameLoop);
 }
 
-// Start
-initShop();
-requestAnimationFrame(gameLoop);
+// --- УПРАВЛЕНИЕ ИГРОЙ ---
 
+function restartGame() {
+    // 1. Сброс переменных состояния
+    STATE = {...INITIAL_STATE};
+    PLAYER = {...INITIAL_PLAYER};
+    
+    // 2. Сброс сущностей
+    entities = {
+        enemies: [],
+        particles: [],
+        projectiles: [],
+        turrets: [],
+        texts: []
+    };
+    
+    // 3. Переинициализация UI и логики
+    document.getElementById('game-over').style.display = 'none';
+    initShop();
+    resize();
+    
+    // 4. Запуск цикла игры заново
+    STATE.lastTime = performance.now(); // Сброс времени, чтобы избежать большого DT
+    STATE.active = true;
+    STATE.animationFrameId = requestAnimationFrame(gameLoop);
+}
+
+// Начало игры
+function startGame() {
+    initShop();
+    // Нам нужно убедиться, что resize() был вызван, чтобы PLAYER.x/y были установлены
+    resize(); 
+    // Запуск цикла
+    STATE.animationFrameId = requestAnimationFrame(gameLoop);
+}
+
+// Запуск при загрузке страницы
+startGame();
 </script>
 </body>
 </html>
