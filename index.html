@@ -39,6 +39,23 @@
         #loading-screen { background-color: #7abaff; z-index: 100; transition: opacity 0.5s; }
         .loader-bar { width: 200px; height: 4px; background: #fff; margin-top: 20px; }
         .loader-progress { width: 0%; height: 100%; background: #000; transition: width 1s; }
+        
+        /* Стили для сообщения об ошибке */
+        #error-message { 
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            transform: translate(-50%, -50%); 
+            background: rgba(255, 0, 0, 0.9); 
+            color: white; 
+            padding: 20px; 
+            border: 3px solid #ffaa00;
+            text-align: center;
+            font-size: 18px;
+            z-index: 100;
+            display: none; /* Сначала скрыто */
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
@@ -76,8 +93,46 @@
     </div>
     
     <div id="language-switcher">RU</div>
+    
+    <div id="error-message"></div>
 
 <script>
+
+// =========================================================
+// !!! НОВЫЙ БЛОК: РЕГИСТРАЦИЯ SERVICE WORKER !!!
+// =========================================================
+
+// Функция для отображения сообщения об ошибке
+function displayError(message) {
+    const errorDiv = document.getElementById('error-message');
+    // Скрываем все игровые элементы, чтобы показать только ошибку
+    document.getElementById('game-container').style.display = 'none';
+    document.getElementById('loading-screen').style.display = 'none';
+    document.getElementById('menu-screen').style.display = 'none';
+    document.getElementById('controls').style.display = 'none';
+    document.getElementById('language-switcher').style.display = 'none';
+    
+    errorDiv.innerHTML = message;
+    errorDiv.style.display = 'block';
+}
+
+
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        // Регистрация Service Worker
+        navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
+            .then(registration => {
+                console.log('ServiceWorker registration successful with scope: ', registration.scope);
+            })
+            .catch(error => {
+                // Если регистрация Service Worker не удалась (например, из-за ошибки CORS или пути)
+                // В этом случае игра, вероятно, не сможет работать офлайн.
+                console.error('ServiceWorker registration failed:', error);
+            });
+    });
+}
+// =========================================================
+
 window.onload = function() {
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
@@ -221,7 +276,18 @@ window.onload = function() {
     setTimeout(() => { loaderProgress.style.width = '100%'; }, 100);
     setTimeout(() => {
         loadingScreen.style.opacity = '0';
-        setTimeout(() => { loadingScreen.style.display = 'none'; showMenu(); }, 500);
+        setTimeout(() => { 
+            // !!! ВАЖНАЯ ПРОВЕРКА !!!
+            // Проверяем, удалось ли загрузить основной скрипт через сеть (при первом посещении)
+            // Если мы офлайн и попали сюда, значит, игра загрузилась из кэша.
+            // Если при загрузке произошла ошибка, это обработает Service Worker (см. ниже).
+            
+            // Если все ОК, показываем меню
+            if(document.getElementById('error-message').style.display !== 'block') {
+                 loadingScreen.style.display = 'none'; 
+                 showMenu(); 
+            }
+        }, 500);
     }, 500); 
 
     function showMenu(dead = false) {
